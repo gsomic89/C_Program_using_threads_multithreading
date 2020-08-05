@@ -1,0 +1,775 @@
+CSC 407: Computer Systems II: 2019 Fall, Assignment #3
+Last Modified 2019 October 16
+
+Purpose:
+To practice using threads (and mutexes and conditions), and to practice safe C memory programming.
+Thread programming (50 Points)
+Please cut, paste and finish the following program.
+main() should create NUM_CHEFS Chefs (use new Chef(yourInt)), create a pthread for each, and pass its pointer to cook(). main() should also create NUM_GOURMANDS Gourmands (use new Gourmand(yourInt)), create a pthread for each, and pass its pointer to eat(). Lastly, main() should wait for all threads to finish.
+cook() should execute the Chef's prepare() method NUM_DISHES_TO_DO times and serve() the resulting Dish instances on table.
+eat() should execute the table's eatFrom() method NUM_DISHES_TO_DO times to get a Dish instance. Then it should do its consume() method to eat the Dish instance.
+NOTE: If you created the Chef and Gourmand objects with a new call, then you ought to get rid of them by a delete() call. The call may be either in main() or in cook() and eat().
+
+Stop and try your program now. It is multi-threaded, but not thread-safe. It should crash.
+
+Make Table thread safe by giving it the necessary mutex(es) and condition(s). Where is/are the critical sections?
+Table's serve() method should have the incoming Chef parameter attempt to place *newDishPtr on the Table. (That is, set dishPtr_ to newDishPtr). This cannot be done if there already is a Dish present (that is, if dishPtr_ != NULL). If there is a Dish present then the Chef should complain vociferously (e.g. "WOULD YOU CLEAR THAT EFF-ING DISH OFF THE TABLE!" -- or whatever PG-13 statement you want) and wait until the old Dish is cleared. serve() has no return value.
+Table's eatFrom() method should have the incoming Gourmand parameter attempt to remove dishPtr_ from the Table (that is, return the old value of dishPtr_ and set dishPtr_ equal to NULL). This cannot be done if there is no Dish present (that is, if dishPtr_ == NULL). If there is no Dish present then the Gourmand should complain vociferously (e.g. "Feed me, Seymour!"-- or whatever PG-13 statement you want) and wait until a Dish is served. eatFrom() returns the old value of dishPtr_ and sets dishPtr_ to NULL.
+Make sure all the destructors run! You should see messages like:
+What's destroyed	Sample message
+Dish	dirt crawling with cockroaches eaten to the last crumb or drop!
+Chef	Mrs Nellie Lovett cleans the pots and goes home.
+Gourmand	Wimpy belches loudly and sleeps soundly.
+5 points EXTRA CREDIT: Make it so the Chefs and Gourmands do not talk over each other. Make it only one object "talks" on a line. Do not change the cout statements, but you may add code before and after them! To properly test this send the output to a file:
+$ ./celebrityChefs 10 > out.txt
+Then see how the output looks in out.txt.
+/*-------------------------------------------------------------------------*
+ *---									---*
+ *---		celebrityChefs.cpp					---*
+ *---									---*
+ *---	    This file defines classes, methods and functions that	---*
+ *---	*ought* to implement N celebrity chefs who prepare meals for	---*
+ *---	M notable gourmands.  All share a single Table object, on which	---*
+ *---	at most one Dish instance may exist at a time.			---*
+ *---									---*
+ *---	----	----	----	----	----	----	----	----	---*
+ *---									---*
+ *---	Version 1.0		Joseph Phillips		2019 October 16	---*
+ *---									---*
+ *-------------------------------------------------------------------------*/
+
+//--									--//
+//	Compile with: 							  //
+//	$ g++ celebrityChefs.cpp -o celebrityChefs -g -lpthread		  //
+//--									--//
+
+
+//--									--//
+//			Common include file sequence:			  //
+//--									--//
+
+#include	<cstdlib>
+#include	<cstdio>
+#include	<string>
+#include	<iostream>
+#include	<unistd.h>
+#include	<pthread.h>
+
+
+
+//--									--//
+//				Common constants:			  //
+//--									--//
+
+//  PURPOSE:  To tell how many Dish instances thta each Chef instance prepares,
+//	and that each Gourmand instance consumes.
+const int	NUM_DISHES_TO_DO		= 32;
+
+//  PURPOSE:  To tell the maximum number of seconds that it takes either to
+//	prepare or consume a dish.
+const int	MAX_SLEEP_SECONDS	= 3;
+
+
+
+//--									--//
+//		Dish-related constants, classes and functions:		  //
+//--									--//
+
+//  PURPOSE:  To define a type telling if modifying phrase should come before
+//	or after the noun phrase it modifies.
+typedef	enum	{
+		  BEFORE_MODLOC,
+		  AFTER_MODLOC
+		}
+		modifierLocation_t;
+
+//  PURPOSE:  To hold information on a clause that grammatically modifies a
+//	Dish instance.
+class	DishModifier
+{
+  //  I.  Member vars:
+  //  PURPOSE:  To point to the modifying phrase.
+  const char*		modifierCPtr_;
+
+  //  PURPOSE:  To tell if modifying phrase should come before or after the
+  //	noun phrase it modifies.
+  modifierLocation_t	modifierLoc_;
+
+  //  II.  Disallowed auto-generated methods:
+  //  No copy-assignment op:
+  DishModifier		operator=
+			(const DishModifier&
+			);
+protected :
+  //  III.  Protected methods:
+
+public :
+  //  IV.  Constructor(s), assignment op(s), factory(s) and destructor:
+  //  PURPOSE:  To initialize '*this' to represent that the modifying phrase
+  //	pointed to by 'newCPtr' should come before or after the noun phrase
+  //	that it modifies according to 'newModifierLoc'.  No return value.
+  DishModifier	(const char*		newCPtr,
+		 modifierLocation_t	newModifierLoc
+		) :
+		modifierCPtr_(newCPtr),
+		modifierLoc_(newModifierLoc)
+		{ }
+
+  //  PURPOSE:  To make '*this' a copy of 'source'.  No parameters.  No
+  //	return value.
+  DishModifier	(const DishModifier&	source
+		) :
+		modifierCPtr_(source.modifierCPtr_),
+		modifierLoc_(source.modifierLoc_)
+		{ }
+
+  //  V.  Accessors:
+  //  PURPOSE:  To return a pointer to the modifying phrase.  No parameters.
+  const char*	getModifierCPtr	()
+				const
+				throw()
+				{ return(modifierCPtr_); }
+
+  //  PURPOSE:  To return a 'modifierLocation_t' value telling if modifying
+  //	phrase should come before or after the noun phrase it modifies.
+  modifierLocation_t
+		getModifierLoc	()
+				const
+				throw()
+				{ return(modifierLoc_); }
+
+  //  VI.  Mutators:
+
+  //  VII.  Methods that do main and misc. work of class:
+
+};
+
+
+
+//  PURPOSE:  To list dish modifiers.
+const DishModifier
+		DISH_MODIFIER_ARRAY[]
+		= { DishModifier("triple deep-fried",BEFORE_MODLOC),
+		    DishModifier("sauteed in liposuctioned human belly fat",
+		    		 AFTER_MODLOC
+				),
+		    DishModifier("crawling with cockroaches",AFTER_MODLOC),
+		    DishModifier("drenched in 18 molar "
+		    		    "*food-grade* sulfuric acid",
+		    		 AFTER_MODLOC
+				),
+		    DishModifier("tape worm infested",BEFORE_MODLOC),
+		    DishModifier("infused with mad-cow prions",AFTER_MODLOC),
+		    DishModifier("glowing with Cobalt-60, Strontium-90 and"
+					" Radium-226 radionuclidic goodness",
+		    		 AFTER_MODLOC
+				),
+		    DishModifier("with a side of ground glass",AFTER_MODLOC)
+		  };
+
+const int	NUM_MODIFIERS	= ( sizeof(DISH_MODIFIER_ARRAY)
+      				    / sizeof(DishModifier)
+				  );
+
+
+//  PURPOSE:  To list dish nouns.
+const char*	NOUN_NAME_ARRAY[]
+		= {"earthworms",
+		   "grass",
+		   "potassium cyanide solution",
+		   "crickets",
+		   "american cheese",
+		   "dirt",
+		   "formaldehyde",
+		   "monosodium glutamate",
+		   "eye of newt, and toe of frog; wool of bat, and tongue of dog",
+		   "Salmonella stew",
+		   "banana slugs",
+		   "high-fructose corn syrup",
+		   "trans-fat",
+		   "botulism beef broth"
+		  };
+
+const int	NUM_NOUNS	= ( sizeof(NOUN_NAME_ARRAY)
+      				    / sizeof(const char*)
+				  );
+
+//  PURPOSE:  To represent a dish.
+class		Dish
+{
+  //  I.  Member vars:
+  //  PURPOSE:  To tell the modifier that describes '*this' Dish instance.
+  int		modifierIndex_;
+
+  //  PURPOSE:  To tell the noun that describes '*this' Dish instance.
+  int		nounIndex_;
+
+  //  II.  Disallowed auto generated methods:
+  //  No copy assignment op:
+  Dish&		operator=
+		(const Dish&	source
+  		);
+
+protected :
+  //  III.  Protected methods:
+
+public :
+  //  IV.  Constructors, assignment op(s), factory(s) and destructor:
+  //  PURPOSE:  To randomly create a dish.  No parameters.  No return value.
+  Dish		()
+  {
+    modifierIndex_	= rand() % NUM_MODIFIERS;
+    nounIndex_		= rand() % NUM_NOUNS;
+  }
+
+  //  PURPOSE:  To make '*this' Dish a copy of 'source'.  No return value.
+  Dish		(const Dish&	source
+  		) :
+		modifierIndex_(source.modifierIndex_),
+		nounIndex_(source.nounIndex_)
+  {
+  }
+
+  //  PURPOSE:  To release resources.  No parameters.  No return value.
+  ~Dish		()
+  {
+    std::cout << toString() << " eaten to the last crumb or drop!\n";
+  }
+
+  //  V.  Accessors:
+
+  //  VI.  Mutators:
+
+  //  VII.  Methods that do main and misc work of class:
+  //  PURPOSE:  To return a 'string' representation of '*this'.  No parameters.
+  std::string	toString	()
+  				const
+  {
+    std::string	toReturn;
+
+    if  (DISH_MODIFIER_ARRAY[modifierIndex_].getModifierLoc() == BEFORE_MODLOC)
+    {
+      toReturn	 = DISH_MODIFIER_ARRAY[modifierIndex_].getModifierCPtr();
+      toReturn	+= " ";
+      toReturn	+= NOUN_NAME_ARRAY[nounIndex_];
+    }
+    else
+    {
+      toReturn	 = NOUN_NAME_ARRAY[nounIndex_];
+      toReturn	+= " ";
+      toReturn	+= DISH_MODIFIER_ARRAY[modifierIndex_].getModifierCPtr();
+    }
+
+    return(toReturn);
+  }
+
+};
+
+
+//  PURPOSE:  To write 'dish' to 'os'.  Returns reference to 'os'.
+std::ostream&	operator<<	(std::ostream&	os,
+				 const Dish&	dish
+				)
+{
+  //  I.  Application validity check:
+
+  //  II.  Output:
+  os << dish.toString();
+
+  //  III.  Finised:
+  return(os);
+}
+
+
+//--									--//
+//		Chef-related constants, classes and functions:		  //
+//--									--//
+
+class		Chef;
+
+//  PURPOSE:  To tell possible names of Chef instances.
+const char*	CHEF_NAME_ARRAY[]
+		= {"Gordon \"Hittite-smiter\" Ramesses II",
+		   "Mrs Nellie Lovett"
+		  };
+
+const int	NUM_CHEFS	= ( sizeof(CHEF_NAME_ARRAY)
+      				    / sizeof(const char*)
+				  );
+
+
+//  PURPOSE:  To write 'chef' to 'os'.  Returns reference to 'os'.
+std::ostream&	operator<<	(std::ostream&	os,
+				 const Chef&	chef
+				);
+
+
+//  PURPOSE:  To represent a Chef.
+class		Chef
+{
+  //  I.  Member vars:
+  //  PURPOSE:  To tell identity of '*this' Chef.
+  int		index_;
+
+  //  II.  Disallowed auto-generated methods:
+  //  No copy assignment op:
+  Chef&		operator=
+		(const Chef&	source
+  		);
+
+protected :
+  //  III.  Protected methods:
+
+public :
+  //  IV.  Constructors, assignment op(s), factory(s) and destructor:
+  //  PURPOSE:  To initialize '*this' Chef to have identity 'newIndex'.
+  //	No return value.
+  Chef		(int	newIndex
+  		) :
+		index_(newIndex)
+		{
+		}
+
+  //  PURPOSE:  To make '*this' Chef a copy of 'source'.  No return value.
+  Chef		(const Chef&	source
+		) :
+		index_(source.index_)
+		{
+		}
+
+  //  PURPOSE:  To release resources.  No parameters.  No return value.
+  ~Chef		()
+  		{
+		  std::cout << toString()
+			    << " cleans the pots and goes home.\n";
+		}
+
+  //  V.  Accessors:
+
+  //  VI.  Mutators:
+
+  //  VII.  Methods that do main and misc. work of class:
+  //  PURPOSE:  To return a pointer to newly created 'Dish' instance.
+  //	No parameters.
+  Dish*		prepare		()
+  		{
+		  Dish*	toReturn	= new Dish();
+
+		  std::cout
+			<< *this
+			<< ": \"My latest creation!  "
+			<< *toReturn
+			<< "!\"\n";
+		 return(toReturn);
+		}
+
+  //  PURPOSE:  To return a 'string' representation of '*this'.  No parameters.
+  std::string	toString	()
+  				const
+		{
+		  return(CHEF_NAME_ARRAY[index_]);
+		}
+
+};
+
+
+//  PURPOSE:  To write 'chef' to 'os'.  Returns reference to 'os'.
+std::ostream&	operator<<	(std::ostream&	os,
+				 const Chef&	chef
+				)
+{
+  //  I.  Application validity check:
+
+  //  II.  Output:
+  os << chef.toString();
+
+  //  III.  Finised:
+  return(os);
+}
+
+
+
+//--									--//
+//		Gourmand-related constants, classes and functions:	  //
+//--									--//
+
+class		Gourmand;
+
+
+//  PURPOSE:  To tell possible names of Gourmand instances.
+const char*	GOURMAND_NAME_ARRAY[]
+		= {"Wimpy",	// "J. Wellington Wimpy",
+		   "Jughead"	// "Forsythe Pendleton \"Jughead\" Jones III"
+		  };
+
+const int	NUM_GOURMANDS	= ( sizeof(GOURMAND_NAME_ARRAY)
+      				    / sizeof(const char*)
+				  );
+
+//  PURPOSE:  To tell possible Gourmand responses to Dish instances.
+const char*	GOURMAND_RESPONSE_ARRAY[]
+		= { " \"My compliments to the chef!\"\n",
+		    " \"Them's good eatins'!\"\n",
+		    " \"May I have another to-go?\"\n",
+		    " \"It just needs a *dash* of salt.\"\n",
+		    " \"I'll gladly pay you Thursday"
+			" for a hamburger today!\"\n",
+		    " \"No special sauce?!?!\"\n",
+		    " \"The outside's too hot,"
+			" the inside's too cold,"
+			" the middle's JUST right!\"\n",
+		    " \"YUCK!  I'm reporting you"
+			" to the Board of Health!\"\n"
+		  };
+
+const int	  NUM_GOURMAND_RESPONSES
+		  = ( sizeof(GOURMAND_RESPONSE_ARRAY) / sizeof(const char*) );
+
+
+//  PURPOSE:  To write 'gourmand' to 'os'.  Returns reference to 'os'.
+std::ostream&	operator<<	(std::ostream&	os,
+				 const Gourmand&	gourmand
+				);
+
+
+//  PURPOSE:  To represent a Gourmand.
+class		Gourmand
+{
+  //  I.  Member vars:
+  //  PURPOSE:  To tell identity of '*this' Gourmand.
+  int		index_;
+
+  //  II.  Disallowed auto-generated methods:
+  //  No copy assignment op:
+  Gourmand&	operator=
+		(const Gourmand&	source
+  		);
+
+protected :
+  //  III.  Protected methods:
+
+public :
+  //  IV.  Constructors, assignment op(s), factory(s) and destructor:
+  //  PURPOSE:  To initialize '*this' Gourmand to have identity 'newIndex'.
+  //	No return value.
+  Gourmand	(int	newIndex
+  		) :
+		index_(newIndex)
+  		{
+		}
+
+  //  PURPOSE:  To make '*this' Gourmand a copy of 'source'.  No return value.
+  Gourmand	(const Gourmand&	source
+		) :
+		index_(source.index_)
+		{
+		}
+
+  //  PURPOSE:  To release resources.  No parameters.  No return value.
+  ~Gourmand	()
+  		{
+		  std::cout << toString()
+			    << " belches loudly and sleeps soundly.\n";
+		}
+
+  //  V.  Accessors:
+
+  //  VI.  Mutators:
+
+  //  VII.  Methods that do main and misc. work of class:
+  //  PURPOSE:  To eat (and thus destroy) '*dishPtr'.  No return value.
+  void		consume		(Dish*	dishPtr
+  				)
+  		{
+		  std::cout << *this
+		  	    << GOURMAND_RESPONSE_ARRAY
+					[rand() % NUM_GOURMAND_RESPONSES];
+		  delete(dishPtr);
+		}
+
+  //  PURPOSE:  To return a 'string' representation of '*this'.  No parameters.
+  std::string	toString	()
+  				const
+		{
+		  return(GOURMAND_NAME_ARRAY[index_]);
+		}
+
+
+};
+
+
+//  PURPOSE:  To write 'gourmand' to 'os'.  Returns reference to 'os'.
+std::ostream&	operator<<	(std::ostream&	os,
+				 const Gourmand&	gourmand
+				)
+{
+  //  I.  Application validity check:
+
+  //  II.  Output:
+  os << gourmand.toString();
+
+  //  III.  Finised:
+  return(os);
+}
+
+
+
+//--									--//
+//		Table-related constants, classes and functions:	  //
+//--									--//
+
+class		Table
+{
+  //  I.  Member vars:
+  //  PURPOSE:  To point to the single dish that is currently on '*this' Table
+  //	(if there is one).
+  Dish*			dishPtr_;
+
+  //  PURPOSE:  To implement mutual exclusion.
+  //  PERHAPS ADD SOME VARS HERE
+
+  //  II.  Disallowed auto-generated methods:
+  //  No copy constructor:
+  Table		(const Table&	source
+		);
+
+  //  No copy assignment op:
+  Table&	operator=
+		(const Table&	source
+  		);
+
+protected :
+  //  III.  Protected methods:
+
+public :
+  //  IV.  Constructors, assignment op(s), factory(s) and destructor:
+  //  PURPOSE:  To initialize '*this' Table to initially have no dishes.  No
+  //	parameters.  No return value.
+  Table		() :
+  		dishPtr_(NULL)
+		{
+		  //  PERHAPS INITIALIZE SOME VARS HERE
+		}
+
+  //  PURPOSE:  To release resources.  No parameters.  No return value.
+  ~Table	()
+  		{
+		  //  PERHAPS DESTROY SOME VARS HERE
+		}
+
+  //  V.  Accessors:
+  //  PURPOSE:  To return 'dishPtr
+  Dish*		getDishPtr	()
+  				const
+		{
+		  return(dishPtr_);
+		}
+
+
+  //  VI.  Mutators:
+
+  //  VII.  Methods that do main and misc. work of class:
+  //  PURPOSE:  To have 'chef' attempt to place '*newDishPtr' on '*this' Table
+  //	(that is, set 'dishPtr_' to 'newDishPtr').  This cannot be done if
+  //	there already is a Dish present (that is, if 'dishPtr_ != NULL').  If
+  //	there is a Dish present then the Chef should complain vociferously
+  //	and wait until the old Dish is cleared.  No return value.
+  void		serve		(Chef&		chef,
+				 Dish*		newDishPtr
+  				)
+  		{
+		  //  MAKE THIS THREAD-SAFE, PLEASE
+		  dishPtr_	= newDishPtr;
+		  sleep( (rand() % MAX_SLEEP_SECONDS) + 1);
+		  std::cout
+			<< chef
+			<< ": \""
+			<< *getDishPtr()
+			<< " is served!\"\n";
+		}
+
+  //  PURPOSE:  To have 'gourmand' attempt to remove 'dishPtr_' from '*this'
+  //	Table (that is, return the old value of 'dishPtr_' and set it to
+  //	'NULL').  This cannot be done if there is no Dish present (that is, if
+  //	'dishPtr_ == NULL').  If there is no Dish present then the Gourmand
+  //	should complain vociferously and wait until a Dish is served.  Returns
+  //	the old value of 'dishPtr_' and sets 'dishPtr_' to 'NULL'.
+  Dish*		eatFrom		(Gourmand&		gourmand
+  				)
+		{
+		  //  MAKE THIS THREAD-SAFE, PLEASE
+
+		  Dish*	toReturn	= getDishPtr();
+		  std::cout
+			<< gourmand
+			<< ": \"That "
+			<< *getDishPtr()
+			<< " looks yummy!\"\n";
+		  sleep( (rand() % MAX_SLEEP_SECONDS) + 1);
+		  dishPtr_  = NULL;
+		  return(toReturn);
+		}
+};
+
+
+//  PURPOSE:  To serve as the global singleton Table instance.
+Table		table;
+
+
+//  PURPOSE:  To have the Chef pointed to by 'void*' ptr 'vPtr' execute
+//	its 'prepare()' method 'NUM_DISHES_TO_DO' times and 'serve()' the
+//	resulting Dish instances on 'table' 'NUM_DISHES_TO_DO' times.
+void*		cook	(void*		vPtr
+			)
+{
+  Chef*	chefPtr	= (Chef*)vPtr;
+
+  //  PERHAPS A LOOP HERE
+
+  return(NULL /* CHANGE IF YOU WANT */);
+}
+
+
+//  PURPOSE:  To have the Gourmand pointed to by 'void*' ptr 'vPtr' execute
+//	its 'eatFrom()' method 'NUM_DISHES_TO_DO' times on 'table' and to
+//	'consume()' the resulting Dish instances 'NUM_DISHES_TO_DO' times.
+void*		eat	(void*		vPtr
+			)
+{
+  Gourmand*	gourmandPtr	= (Gourmand*)vPtr;
+
+  //  PERHAPS A LOOP HERE
+
+  return(NULL /* CHANGE IF YOU WANT */);
+}
+
+
+//  PURPOSE:  To harass CSC 407 students into learning thread programming
+//	and thread-safe producer-consumer buffer creation.  If 'argc >= 2' then
+//	'argv[1]' is used as a random number seed.  Return 'EXIT_SUCCESS' to
+//	OS.
+int		main	(int		argc,
+			 char*		argv[]
+			)
+{
+  //  I.  Application validity check:
+
+  //  II.  Let's eat!
+  //  II.A.  Initialize random number generator:
+  if  (argc >= 2)
+    srand(atoi(argv[1]));
+
+  //  II.B.  Create Chef and Gourmand threads:
+  pthread_t	chefIds[NUM_CHEFS];
+  pthread_t	gourmandIds[NUM_CHEFS];
+
+  //  PERHAPS A LOOP HERE
+
+  //  II.C.  Wait for Chef and Gourmand threads:
+  //  PERHAPS A LOOP HERE
+
+  //  III.  Finished:
+  return(EXIT_SUCCESS);
+}
+Sample output:
+$ ./celebrityChefs > out.txt
+WimpyMrs Nellie Lovett: "My latest creation!  : "Feed me, Seymour!"
+dirt sauteed in liposuctioned human belly fat!"
+Jughead: "Feed me, Seymour!"
+Gordon "Hittite-smiter" Ramesses II: "My latest creation!  american cheese with a side of ground glass!"
+Mrs Nellie Lovett: "dirt sauteed in liposuctioned human belly fat is served!"
+Mrs Nellie Lovett: "My latest creation!  banana slugs with a side of ground glass!"
+Mrs Nellie Lovett: "Would you clear the freakin' table!?!"
+Wimpy: "That dirt sauteed in liposuctioned human belly fat looks yummy!"
+Wimpy "Them's good eatins'!"
+dirt sauteed in liposuctioned human belly fat eaten to the last crumb or drop!
+Gordon "Hittite-smiter" Ramesses II: "american cheese with a side of ground glass is served!"
+Gordon "Hittite-smiter" Ramesses II: "My latest creation!  dirt crawling with cockroaches!"
+Gordon "Hittite-smiter" Ramesses II: "Would you clear the freakin' table!?!"
+Mrs Nellie Lovett: "Would you clear the freakin' table!?!"
+...
+Mrs Nellie Lovett: "earthworms drenched in 18 molar *food-grade* sulfuric acid is served!"
+Mrs Nellie Lovett: "My latest creation!  tape worm infested monosodium glutamate!"
+Mrs Nellie Lovett: "Would you clear the freakin' table!?!"
+Wimpy: "That earthworms drenched in 18 molar *food-grade* sulfuric acid looks yummy!"
+Wimpy "My compliments to the chef!"
+earthworms drenched in 18 molar *food-grade* sulfuric acid eaten to the last crumb or drop!
+Gordon "Hittite-smiter" Ramesses II cleans the pots and goes home.
+Wimpy belches loudly and sleeps soundly.
+Mrs Nellie Lovett: "tape worm infested monosodium glutamate is served!"
+Jughead: "That tape worm infested monosodium glutamate looks yummy!"
+Jughead "It just needs a *dash* of salt."
+tape worm infested monosodium glutamate eaten to the last crumb or drop!
+Mrs Nellie Lovett cleans the pots and goes home.
+Jughead belches loudly and sleeps soundly.
+Safe C memory programming (50 Points)
+Overview:
+Write a C program that:
+Lets the user safely enter a string.
+Parses that string into a linked list of smaller strings. The smaller strings come from the strings between the commas in the string the user entered.
+
+For example, if the user types:
+
+12345,1234,123,12,1,,
+		  
+then the program should separate it into 7 strings:
+"12345"
+"1234"
+"123"
+"12"
+"1"
+""
+""
+Saves the sequence of strings as a linked list.
+Prints the linked list.
+free()s the linked list.
+Sample output:
+$ ./separator 
+Please enter a line of text: Mary,had,a,little,lamb
+	"Mary"
+	"had"
+	"a"
+	"little"
+	"lamb"
+$ ./separator 
+Please enter a line of text: ,,    ,,
+	""
+	""
+	"    "
+	""
+	""
+$ ./separator 
+Please enter a line of text: 12345,1234,123,12,1,,
+	"12345"
+	"1234"
+	"123"
+	"12"
+	"1"
+	""
+	""
+	  
+Coding:
+You must put your strings in the following C (not C++) list node:
+struct		Word
+{
+  char*		textPtr_;
+  struct Word*	nextPtr_;
+};
+	      
+Also, you may only use the following C string functions (of course you will not need them all):
+printf(), fprintf(), malloc(), calloc(), realloc(), free(), fgets(), snprintf(), strncpy(), strncat(), strncmp(), strdup(), strlen() and strchr()
+HINT: I recommend writing 4 functions:
+struct Word* obtainCommaSeparatedList (const char* string)
+void printCommaSeparatedList (const struct Word* list)
+void freeCommaSeparatedList (struct Word* list)
+int main() (of course!)
+MORE HINTS:
+To get rid of the annoying \n char that fgets() adds to the end of entered strings, do something like:
+  char*		cPtr	= strchr(line,'\n');
+
+  if  (cPtr != NULL)
+    *cPtr = '\0';
+		  
+Have a char* variable (e.g. charRun) that starts at the beginning of the next string (e.g. start). Advance charRun to the next comma or nul character (noting it may already be at one). Then use pointer arithmetic to determine how many chars separate the two (charRun - string)
+To make a new heap-allocated struct Word node, say:
+struct Word*	toReturn	= (struct Word*)malloc(sizeof(struct Word));
